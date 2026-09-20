@@ -1,4 +1,4 @@
-// Замер: шаблон runs-on ubuntu-full-x64 с источником qemu вместо amazon-ebs.
+// TatNet: шаблон runs-on ubuntu-full-x64 с источником qemu вместо amazon-ebs.
 // Провижионеры — как в patches/ubuntu/templates/ubuntu-full-x64.pkr.hcl,
 // AWS-специфика заменена на cloud image Ubuntu + seed cidata.
 packer {
@@ -121,7 +121,7 @@ build {
 
   provisioner "shell" {
     execute_command = "sudo sh -c '{{ .Vars }} {{ .Path }}'"
-    scripts         = ["${path.root}/../custom/files/pre.sh"]
+    scripts         = ["${path.root}/../custom/files/pre-tatnet.sh"]
   }
   # Dummy file added to please Azure script compatibility
   provisioner "file" {
@@ -231,6 +231,10 @@ build {
   provisioner "shell" {
     execute_command = "sudo sh -c '{{ .Vars }} {{ .Path }}'"
     scripts         = ["${path.root}/../custom/files/runner-user.sh"]
+  }
+  provisioner "shell" {
+    execute_command = "sudo sh -c '{{ .Vars }} {{ .Path }}'"
+    scripts         = ["${path.root}/../custom/files/tatnet-runtime.sh"]
   }
   provisioner "shell" {
     execute_command   = "sudo sh -c '{{ .Vars }} {{ .Path }}'"
