@@ -58,7 +58,14 @@ usermod -aG docker runner
 # дисциплинировать часы сам); runner-user.sh его уже поставил.
 systemctl enable chrony || true
 
+# Версия раннера — ТОЛЬКО от пользователя runner: Runner.Listener на любом
+# вызове заводит /home/runner/_diag, и созданный root'ом каталог потом
+# роняет раннер у пользователя runner («Access to the path … _diag … is
+# denied», exit 134 — первая джоба на этом образе, 20.09.2026).
+runner_version=$(sudo -u runner /home/runner/bin/Runner.Listener --version 2>/dev/null || echo "?")
+rm -rf /home/runner/_diag
+chown -R runner:runner /home/runner
 {
   echo "tatnet-runtime $(date -u +%F)"
-  echo "actions-runner $(cat /home/runner/bin/Runner.Listener.deps.json >/dev/null 2>&1 && /home/runner/bin/Runner.Listener --version 2>/dev/null || echo ?)"
+  echo "actions-runner ${runner_version}"
 } >> /etc/tatnet-ci-runner.versions || true
