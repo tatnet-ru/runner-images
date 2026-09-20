@@ -33,6 +33,7 @@ rewrite_apt_source() {
       -e "s#https?://[^/]*\.ec2\.(archive|ports)\.ubuntu\.com/(ubuntu|ubuntu-ports)/?#${apt_primary_mirror}#g" \
       -e "s#https?://security\.ubuntu\.com/ubuntu/?#${apt_security_mirror}#g" \
       -e "s#https?://ports\.ubuntu\.com/ubuntu-ports/?#${apt_primary_mirror}#g" \
+      -e "s#http://archive\.ubuntu\.com/ubuntu/?#${apt_primary_mirror}#g" \
       "$f"
   fi
 }
