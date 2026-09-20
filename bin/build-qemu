@@ -42,7 +42,9 @@ template=$(yq -r ".images[] | select(.id==\"$image_id\") | .template // \"$image
 template_src="$root/patches/$family/templates/$template-qemu.pkr.hcl"
 [ -f "$template_src" ] || { echo "нет qemu-шаблона $template_src" >&2; exit 1; }
 install_scripts=$(yq -o=json -I=0 ".images[] | select(.id==\"$image_id\") | .install_scripts // []" config.yml)
-toolset_file="toolset-${dist//[^0-9]/}04$([ "$arch" = arm64 ] && echo -arm64).json"
+toolset_suffix=""
+[ "$arch" = arm64 ] && toolset_suffix="-arm64"
+toolset_file="toolset-${dist//[^0-9]/}04${toolset_suffix}.json"
 image_version=$(date -u +%Y%m%d%H%M%S)
 
 work=${work:-$root/.tmp/qemu/$image_id}
