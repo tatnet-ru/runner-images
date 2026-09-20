@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# Сборка образа на KVM-хосте qemu-билдером Packer — тот же список шагов, что у
+# AWS-шаблона, но источник — cloud image Ubuntu + seed cidata.
+#
+#   bin/build-qemu --image-id ubuntu24-full-x64 [--work DIR] [--cpus 8] [--memory 8192]
+#
+# Требует: packer, qemu-system-x86_64, qemu-img, yq, доступ к /dev/kvm (root
+# или группа kvm). Перед сборкой — bin/sync-local с тем же --image-id.
+# Результат: <work>/out/<image-id>.qcow2 и <work>/build.log.
+set -euo pipefail
+
+image_id=""
+work=""
+cpus=8
+memory=8192
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --image-id) image_id="$2"; shift 2 ;;
+    --work) work="$2"; shift 2 ;;
+    --cpus) cpus="$2"; shift 2 ;;
+    --memory) memory="$2"; shift 2 ;;
+    -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
+    *) echo "неизвестный аргумент: $1" >&2; exit 1 ;;
+  esac
+done
+[ -n "$image_id" ] || { echo "нужен --image-id" >&2; exit 1; }
+
+cd "$(dirname "$0")/.."
+root=$(pwd)
+for tool in packer qemu-system-x86_64 qemu-img yq ssh-keygen; do
+  command -v "$tool" >/dev/null || { echo "нужен $tool" >&2; exit 1; }
+done
+[ -r /dev/kvm ] && [ -w /dev/kvm ] || { echo "нет доступа к /dev/kvm — root или группа kvm" >&2; exit 1; }
+
+IFS=- read -r dist variant arch <<<"$image_id"
+family=${dist//[0-9]/}
+release_dir="$root/releases/$dist/$arch"
+[ -d "$release_dir/images/$family" ] || { echo "нет $release_dir — сначала bin/sync-local --image-id $image_id" >&2; exit 1; }
+
+template=$(yq -r ".images[] | select(.id==\"$image_id\") | .template // \"$image_id\"" config.yml)
+[ -n "$template" ] && [ "$template" != "null" ] || { echo "образ $image_id не описан в config.yml" >&2; exit 1; }
+template_src="$root/patches/$family/templates/$template-qemu.pkr.hcl"
+[ -f "$template_src" ] || { echo "нет qemu-шаблона $template_src" >&2; exit 1; }
+install_scripts=$(yq -o=json -I=0 ".images[] | select(.id==\"$image_id\") | .install_scripts // []" config.yml)
+toolset_file="toolset-${dist//[^0-9]/}04$([ "$arch" = arm64 ] && echo -arm64).json"
+image_version=$(date -u +%Y%m%d%H%M%S)
+
+work=${work:-$root/.tmp/qemu/$image_id}
+mkdir -p "$work"
+[ -f "$work/ssh_key" ] || ssh-keygen -q -t ed25519 -N "" -f "$work/ssh_key"
+rm -rf "$work/out"
+
+templates_dir="$release_dir/images/$family/templates"
+mkdir -p "$templates_dir"
+cp "$template_src" "$templates_dir/"
+
+export PACKER_PLUGIN_PATH="$work/plugins" PACKER_LOG=0 CHECKPOINT_DISABLE=1
+cd "$templates_dir"
+packer init "$template-qemu.pkr.hcl"
+date -u +%FT%TZ > "$work/build-start"
+packer build -color=false -timestamp-ui \
+  -var "image_os=$dist" \
+  -var "image_version=$image_version" \
+  -var "toolset_file=$toolset_file" \
+  -var "install_scripts=$install_scripts" \
+  -var "output_directory=$work/out" \
+  -var "ssh_private_key_file=$work/ssh_key" \
+  -var "ssh_public_key=$(cat "$work/ssh_key.pub")" \
+  -var "cpus=$cpus" -var "memory=$memory" \
+  -var "vm_name=$image_id.qcow2" \
+  "$template-qemu.pkr.hcl" 2>&1 | tee "$work/build.log"
+date -u +%FT%TZ > "$work/build-end"
+echo "start $(cat "$work/build-start") end $(cat "$work/build-end")"
+qemu-img info "$work/out/$image_id.qcow2" | grep -E "virtual size|disk size"

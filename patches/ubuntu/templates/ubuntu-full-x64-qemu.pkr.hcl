@@ -62,6 +62,10 @@ variable "ssh_private_key_file" {
 variable "ssh_public_key" {
   type = string
 }
+variable "vm_name" {
+  type    = string
+  default = "ubuntu24-full-x64.qcow2"
+}
 variable "iso_url" {
   type    = string
   default = "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
@@ -84,7 +88,7 @@ source "qemu" "build" {
   net_device       = "virtio-net"
   disk_interface   = "virtio"
   output_directory = var.output_directory
-  vm_name          = "ubuntu24-full-x64.qcow2"
+  vm_name          = var.vm_name
 
   cd_label = "cidata"
   cd_content = {
