@@ -51,7 +51,13 @@ test -s /home/runner/run.sh
 /home/runner/bin/Runner.Listener warmup && rm -rf /home/runner/_diag
 
 # https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/set-time.html
-echo 'server 169.254.169.123 prefer iburst minpoll 4 maxpoll 4' >  /etc/chrony/chrony.conf
+# Часы гостя: chrony с пулом дистрибутива. У AWS здесь Amazon Time Sync
+# (169.254.169.123), у cloud image chrony нет вовсе — а гость без дисциплины
+# часов уплывает вместе с TSC хоста (TatNet, 2026-09-06: ~9,5 с/сутки).
+apt-get install -y chrony
+if [ -f /etc/chrony/chrony.conf ] && curl -fs -m 1 http://169.254.169.254/latest/meta-data/instance-id >/dev/null 2>&1; then
+  echo 'server 169.254.169.123 prefer iburst minpoll 4 maxpoll 4' >  /etc/chrony/chrony.conf
+fi
 
 echo "Storage=Volatile" >> /etc/systemd/journald.conf
 echo "RuntimeMaxUse=64M" >> /etc/systemd/journald.conf
