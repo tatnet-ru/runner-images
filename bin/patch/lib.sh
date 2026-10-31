@@ -187,7 +187,7 @@ build_rolaunch() {
 
   mkdir -p "$dist_dir"
   rm -f "$rolaunch_bin"
-  (cd tools/rolaunch && mise exec go@1.26.1 -- env CGO_ENABLED=0 GOOS=linux GOARCH="$goarch" go build -trimpath -ldflags='-s -w' -o "$rolaunch_bin" .)
+  (cd tools/rolaunch && mise exec go@1.27.3 -- env CGO_ENABLED=0 GOOS=linux GOARCH="$goarch" go build -trimpath -ldflags='-s -w' -o "$rolaunch_bin" .)
   if ! command -v upx >/dev/null; then
     echo "upx is required to compress rolaunch for packer upload" >&2
     exit 1
