@@ -1,0 +1,49 @@
+name: TatNet image checks
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - uses: ruby/setup-ruby@26e5b7d197ebf60545ee9667bcbace0be11ccaec
+        with:
+          ruby-version: '3.3.13'
+          bundler-cache: true
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca
+        with:
+          install_args: go upx
+      - name: Install pinned yq
+        run: |
+          mkdir -p "$RUNNER_TEMP/tatnet-bin"
+          curl -fsSL --retry 3 https://github.com/mikefarah/yq/releases/download/v4.54.2/yq_linux_amd64 -o "$RUNNER_TEMP/tatnet-bin/yq"
+          echo "44c7759059b4910827a0059a2757b22001e59360cdecdb2ef8dedc4b6c7e9f32  $RUNNER_TEMP/tatnet-bin/yq" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/tatnet-bin/yq"
+          echo "$RUNNER_TEMP/tatnet-bin" >> "$GITHUB_PATH"
+      - name: Ruby regressions and workflow image lists
+        run: |
+          bundle exec ruby -Itest -e 'Dir["test/*_test.rb"].sort.each { |f| require_relative f }'
+          bundle exec bin/utils/check-workflow-images
+      - name: Go boot tooling
+        working-directory: tools/rolaunch
+        run: |
+          mise exec go -- go build ./...
+          mise exec go -- go test -race ./...
+          mise exec go -- go vet ./...
+      - name: Sync locked Ubuntu and Windows recipes
+        run: |
+          bundle exec bin/sync --dist-prefix ubuntu
+          bundle exec bin/sync --dist-prefix windows
+      - name: Verify TatNet QEMU build inputs
+        run: |
+          bin/sync-local --image-id ubuntu24-full-x64
+          bundle exec ruby test/tatnet_sync_check.rb
+          bash -n bin/sync-local bin/build-qemu patches/ubuntu/files/pre-tatnet.sh patches/ubuntu/files/tatnet-runtime.sh patches/ubuntu/files/runner-user.sh
+      - name: Validate QEMU Packer template syntax
+        run: |
+          docker run --rm -v "$PWD:/src:ro" -w /src hashicorp/packer:1.16.2 fmt -check patches/ubuntu/templates/ubuntu-full-x64-qemu.pkr.hcl
+          docker run --rm -v "$PWD:/src:ro" -w /src hashicorp/packer:1.16.2 validate -syntax-only patches/ubuntu/templates/ubuntu-full-x64-qemu.pkr.hcl

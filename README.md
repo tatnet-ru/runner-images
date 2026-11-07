@@ -17,12 +17,14 @@ Those images are very close to 1-1 compatible with official GitHub Actions runne
 * `ubuntu26-full-x64`
 * `ubuntu26-full-arm64`
 
-Ubuntu 26 images are not yet part of the scheduled builds and are built on demand. See the notes below for Ubuntu 26 specifics.
+See the notes below for Ubuntu 26 specifics.
 
-Minimal images only ship the GitHub Actions runner and Docker, for the fastest boot times:
+Minimal images only ship the GitHub Actions runner and Docker, for the fastest boot times. They boot quietly, name the network interface `eth0`, and do not load CPU microcode, which a virtual machine cannot apply. On UEFI instances they boot straight into a unified kernel image (UKI), without GRUB; x64 instance types without UEFI still boot through GRUB:
 
 * `ubuntu24-minimal-x64`
 * `ubuntu24-minimal-arm64`
+* `ubuntu26-minimal-x64`
+* `ubuntu26-minimal-arm64`
 
 ### Windows
 
@@ -83,11 +85,19 @@ For instance, for the `ubuntu22-full-x64` image, search for:
 ## Notes
 
 * SSH daemon is disabled by default, so be sure to enable it in a user-data script if needed.
+* Full Ubuntu and Windows images, and their GPU and StepSecurity descendants, include [otel-cli](https://github.com/equinix-labs/otel-cli) (v0.4.5, on the `PATH`), to wrap workflow commands in spans for the runner's local OpenTelemetry collector. Minimal images do not.
 * For full images, the new rolaunch boot path applies only to Ubuntu 26, including its GPU and StepSecurity descendants. Ubuntu 22 and 24 full images keep their existing cloud-init user-data path.
-* Fresh Ubuntu 26 x64 UEFI launches use a one-shot direct kernel boot. GRUB stays first for reboots and legacy fallback. Ubuntu 26 arm64 stays on GRUB. Secure Boot is outside this fast-path contract and falls back through shim and GRUB.
+* Fresh Ubuntu 26 x64 UEFI launches use a one-shot direct kernel boot. Its command line skips the PS/2 keyboard and mouse probe (`i8042.nokbd i8042.noaux i8042.nopnp`), which EC2 has no use for and which takes about 0.5 s. GRUB stays first for reboots and legacy fallback. Ubuntu 26 arm64 stays on GRUB. Secure Boot is outside this fast-path contract and falls back through shim and GRUB.
+* Ubuntu 26 full images and the minimal images boot `quiet` and preset the serial console's terminal type and size (`systemd.tty.term.console=linux`, 24 rows, 80 columns). systemd 259 otherwise queries the console three times and waits 333 ms for each reply, which nothing on `ttyS0` sends. Kernel messages stay in `dmesg` and the journal; rolaunch still logs to the console.
 * On those Ubuntu 26 images, user data must be a raw, uncompressed shebang shell script. Rolaunch does not process cloud-config, multipart MIME, or compressed payloads and requires a reachable EC2 instance metadata endpoint.
+* Every Ubuntu image, minimal included, ships the RunsOn bootstrap binaries (v0.1.17, v0.1.12 and v0.1.9), each checked against a pinned SHA-256 at build time (`patches/ubuntu/files/install-runs-on-bootstrap.sh`), so a RunsOn user data never downloads one at boot. On the rolaunch images, rolaunch runs the agent (RunsOn v3) or sandboxd (RunsOn v4) it prefetched from S3 instead; when that prefetch fails, the user data runs the bootstrap binary, which downloads it itself.
+* On the rolaunch images, rolaunch reads the runner's `bin/` and its newest Node (`externals/node24`) once at boot, 32 reads at a time, alongside its other work. A fresh EBS volume otherwise fetches each block from its snapshot when the runner first reads it: the runner's first start and its first JavaScript action then take up to 1.4 s longer. It waits for the read, at most 30 s, before it exits; no unit is ordered after it.
+* On the rolaunch images, rolaunch grows the root partition with `sfdisk` and `partx` (about 40 ms) before it runs the user data, and falls back to `growpart`, which takes 1 to 2 s at boot.
+* On those Ubuntu 26 images, a failed rolaunch run, including a user-data script that exits non-zero, powers the instance off. Launch with `InstanceInitiatedShutdownBehavior=terminate` to have EC2 terminate it.
+* On those Ubuntu 26 images, rolaunch gives up if it cannot reach the instance metadata endpoint within 60 seconds. While it waits, it logs the state of each network interface every 10 seconds and, if the endpoint is still unreachable after 15 seconds, asks `systemd-networkd` to configure them again.
 * Ubuntu 26 uses `systemd-networkd` directly and disables cloud-init. This fast path supports a single primary ENA with IPv4 or dual-stack DHCP, including custom DHCP DNS and search domains.
 * Ubuntu 26 does not support multi-ENI policy routing, secondary IP discovery, IPv6-only subnets, old Xen network drivers, or persistent netplan configuration. Use Ubuntu 22 or 24 when those network layouts are required.
+* Ubuntu 26 full and StepSecurity images, and the minimal images, retry stalled connections to GitHub and AWS on a new source port during their first two minutes. In us-east-1, an instance launched during a few minutes that recur about every hour loses the SYNs of some of its new outbound connections for its first minute, and such a connection otherwise stays stalled for up to a minute. Until two minutes after boot, TCP to GitHub's and AWS's published addresses on port 443 leaves with a random source port, and each SYN retransmission, one second apart, gets a new one. `sudo nft list table ip ro_syn` shows the rule and its counter; its chain is empty after two minutes.
 * For local validation, set `AMI_PUBLIC=false` to keep a full Ubuntu AMI private.
 
 ## Build provenance
@@ -130,3 +140,15 @@ Amazon Inspector EC2 scanning must be enabled in `us-east-1` for the account. Re
 AMI scanning is opt-in from `config.yml`. Add `inspect: true` to an image entry to scan the latest dev and prod AMIs matching `runs-on-dev-<image_id>-*` and `runs-on-v2.2-<image_id>-*`. Missing `inspect` defaults to `false`. The `inspector_scan` AMI tag is scanner-owned state; do not manage it from Packer templates or `bin/copy-ami`.
 
 The stack template lives in [cloudformation/inspector-ami-scanner.yml](cloudformation/inspector-ami-scanner.yml).
+
+## TatNet QEMU images
+
+TatNet's `image-builder` uses `bin/sync-local --image-id ubuntu24-full-x64`
+and `bin/build-qemu` to produce qcow2 images from this repository. The QEMU
+path keeps Ubuntu cloud-init (`write_files`, `runcmd`, disk growth), the QEMU
+guest agent, enabled Docker and the TatNet Runners bootstrap. AWS AMI workflows
+remain separate; upstream's OIDC jobs require the `AWS_ROLE_ARN` repository variable.
+
+The `TatNet image checks` workflow validates Ruby regressions, Go boot tooling,
+locked Ubuntu/Windows synchronization and QEMU build inputs on pull requests.
+Generated `releases/` trees and compiled Go command binaries are not committed.

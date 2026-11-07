@@ -1,3 +1,6 @@
+// Shared template for ubuntu{24,26}-minimal-arm64. bin/build injects
+// toolset_file (derived from the image id) and image_os, which selects the
+// Ubuntu release to debootstrap.
 packer {
   required_plugins {
     amazon = {
@@ -32,6 +35,11 @@ variable "image_folder" {
   default = "/imagegeneration"
 }
 
+variable "publish_publicly" {
+  type    = bool
+  default = true
+}
+
 variable "region" {
   type    = string
   default = "${env("AWS_DEFAULT_REGION")}"
@@ -57,8 +65,11 @@ variable "source_ami_owner" {
 }
 
 variable "source_ami_name" {
-  type    = string
-  default = "ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"
+  type = string
+}
+
+variable "toolset_file" {
+  type = string
 }
 
 variable "subnet_id" {
@@ -83,12 +94,19 @@ variable "volume_type" {
 
 variable "instance_type" {
   type    = string
-  default = "m8a.large"
+  default = "m8g.large"
 }
 
 variable "installer_script_folder" {
   type    = string
   default = "/imagegeneration/installers"
+}
+
+locals {
+  ubuntu_release = {
+    ubuntu24 = "noble"
+    ubuntu26 = "resolute"
+  }[var.image_os]
 }
 
 source "amazon-ebssurrogate" "build_ebs" {
@@ -101,9 +119,9 @@ source "amazon-ebssurrogate" "build_ebs" {
   ami_name                                  = var.ami_name
   ami_description                           = var.ami_description
   ami_virtualization_type                   = "hvm"
-  ami_architecture                          = "x86_64"
+  ami_architecture                          = "arm64"
   # make AMIs publicly accessible
-  ami_groups                  = ["all"]
+  ami_groups                  = var.publish_publicly ? ["all"] : []
   ena_support                 = true
   ebs_optimized               = true
   instance_type               = var.instance_type
@@ -126,7 +144,7 @@ EOF
   ami_regions = var.ami_regions
 
   // make underlying snapshot public
-  snapshot_groups = ["all"]
+  snapshot_groups = var.publish_publicly ? ["all"] : []
 
   launch_block_device_mappings {
     device_name           = "/dev/sdf"
@@ -226,7 +244,7 @@ build {
 
   provisioner "file" {
     destination = "${var.installer_script_folder}/toolset.json"
-    source      = "${path.root}/../toolsets/toolset-2404.json"
+    source      = "${path.root}/../toolsets/${var.toolset_file}"
   }
 
   provisioner "file" {
@@ -247,10 +265,11 @@ build {
   provisioner "shell" {
     environment_vars = [
       "TARGET_VOLUME_SIZE_GB=${var.volume_size}",
-      "TARGET_ARCH=amd64",
-      "UBUNTU_RELEASE=noble",
-      "UBUNTU_MIRROR=https://archive.ubuntu.com/ubuntu",
-      "UBUNTU_SECURITY_MIRROR=https://security.ubuntu.com/ubuntu",
+      "TARGET_ARCH=arm64",
+      "UBUNTU_RELEASE=${local.ubuntu_release}",
+      "IMAGE_OS=${var.image_os}",
+      "UBUNTU_MIRROR=https://ports.ubuntu.com/ubuntu-ports",
+      "UBUNTU_SECURITY_MIRROR=https://ports.ubuntu.com/ubuntu-ports",
       "ROLAUNCH_SOURCE=/tmp/rolaunch",
       "GROW_ROOTFS_SCRIPT_SOURCE=${var.image_folder}/grow-rootfs.sh",
       "TARGET_ROOT_MOUNT=/mnt/minimal-root",
@@ -274,8 +293,8 @@ build {
       "INSTALLER_SCRIPT_FOLDER=${var.installer_script_folder}",
       "DEBIAN_FRONTEND=noninteractive",
       "TARGET_ROOT_MOUNT=/mnt/minimal-root",
-      "TARGET_UBUNTU_MIRROR=https://archive.ubuntu.com/ubuntu/",
-      "TARGET_UBUNTU_SECURITY_MIRROR=https://security.ubuntu.com/ubuntu/",
+      "TARGET_UBUNTU_MIRROR=https://ports.ubuntu.com/ubuntu-ports/",
+      "TARGET_UBUNTU_SECURITY_MIRROR=https://ports.ubuntu.com/ubuntu-ports/",
       "WAAGENT_CONFIG_SOURCE=/tmp/waagent.conf"
     ]
     execute_command = "sudo sh -c '{{ .Vars }} {{ .Path }}'"
@@ -300,6 +319,8 @@ build {
       "ro-run-script-in-target ${var.installer_script_folder}/configure-environment.sh",
       "ro-run-script-in-target ${var.installer_script_folder}/configure-apt-mock.sh",
       "ro-run-script-in-target ${var.installer_script_folder}/configure-apt.sh",
+      "ro-run-script-in-target ${var.installer_script_folder}/configure-dpkg-eatmydata.sh",
+      "ro-run-script-in-target ${var.installer_script_folder}/configure-apt-gzip-indexes.sh",
       "ro-run-script-in-target ${var.installer_script_folder}/configure-limits.sh"
     ]
   }
@@ -322,6 +343,15 @@ build {
       "ro-run-script-in-target ${var.image_folder}/minimal-install-target-tooling.sh",
       "ro-run-script-in-target ${var.image_folder}/minimal-install-target-docker.sh"
     ]
+  }
+
+  provisioner "shell" {
+    environment_vars = [
+      "IMAGE_OS=${var.image_os}",
+      "TARGET_ROOT_MOUNT=/mnt/minimal-root"
+    ]
+    execute_command = "sudo sh -c '{{ .Vars }} {{ .Path }}'"
+    script          = "${path.root}/../custom/files/configure-syn-reroll.sh"
   }
 
   provisioner "shell" {
@@ -349,7 +379,7 @@ build {
       "IMAGE_FOLDER=${var.image_folder}",
       "INSTALLER_SCRIPT_FOLDER=${var.installer_script_folder}",
       "ROOTFS_COMPACTION_HELPER=/tmp/rootfs-compaction.sh",
-      "UPX_ARCH=amd64",
+      "UPX_ARCH=arm64",
       "MINIMAL_TARGET_STATE_FILE=/var/lib/runs-on/minimal-target/state.env",
       "DEBIAN_FRONTEND=noninteractive",
       "TARGET_ROOT_MOUNT=/mnt/minimal-root"

@@ -74,6 +74,34 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      # runs-on/action registers the results backend with Magic Cache, so this
+      # round trip runs before it: on s3-cache runs the agent must find the
+      # backend in the runner's Worker log by itself.
+      - name: Generate artifact before runs-on/action
+        if: contains(inputs.extras, 's3-cache')
+        shell: pwsh
+        run: |
+          New-Item -Path "early-artifact" -ItemType Directory -Force | Out-Null
+          "hello world" | Out-File -FilePath "early-artifact/world.txt"
+      - name: Upload artifact before runs-on/action
+        if: contains(inputs.extras, 's3-cache')
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: early-artifact-${{ inputs.ami_id }}-${{ inputs.index }}
+          path: early-artifact/world.txt
+      - name: Download artifact before runs-on/action
+        if: contains(inputs.extras, 's3-cache')
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: early-artifact-${{ inputs.ami_id }}-${{ inputs.index }}
+          path: early-artifact-downloaded
+      - name: Compare artifact before runs-on/action
+        if: contains(inputs.extras, 's3-cache')
+        shell: pwsh
+        run: |
+          if ((Get-FileHash early-artifact/world.txt).Hash -ne (Get-FileHash early-artifact-downloaded/world.txt).Hash) {
+            throw "Downloaded artifact differs from the uploaded file"
+          }
       - uses: runs-on/action@v2 # keep pinned on tag as we need to make sure latest version passes tests
         with:
           show_env: true
@@ -99,12 +127,12 @@ jobs:
         run: |
           New-Item -Path "path/to/artifact" -ItemType Directory -Force
           "hello world" | Out-File -FilePath "path/to/artifact/world.txt"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: my-artifact-${{ inputs.ami_id }}-${{ inputs.index }}
           path: path/to/artifact/world.txt
       - run: rm path/to/artifact/world.txt
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: my-artifact-${{ inputs.ami_id }}-${{ inputs.index }}
           path: path/to/artifact/world.txt
@@ -212,6 +240,7 @@ jobs:
                 test "$(< /proc/cmdline)" = "$expected_cmdline"
                 [[ " $expected_cmdline " == *' root=PARTUUID='* ]]
                 [[ " $expected_cmdline " == *' panic=-1 '* ]]
+                [[ " $expected_cmdline " == *' i8042.nokbd i8042.noaux i8042.nopnp '* ]]
                 [[ " $(< /proc/cmdline) " != *' BOOT_IMAGE='* ]]
                 [[ " $(< /proc/cmdline) " != *' initrd='* ]]
 
@@ -231,6 +260,27 @@ jobs:
           fi
       - name: Systemctl status
         run: sudo systemctl status
+      # runs-on/action registers the results backend with Magic Cache, so this
+      # round trip runs before it: on s3-cache runs the agent must find the
+      # backend in the runner's Worker log by itself.
+      - name: Generate artifact before runs-on/action
+        if: contains(inputs.extras, 's3-cache')
+        run: mkdir -p early-artifact && echo hello > early-artifact/world.txt
+      - name: Upload artifact before runs-on/action
+        if: contains(inputs.extras, 's3-cache')
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: early-artifact-${{ inputs.ami_id }}-${{ inputs.index }}
+          path: early-artifact/world.txt
+      - name: Download artifact before runs-on/action
+        if: contains(inputs.extras, 's3-cache')
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: early-artifact-${{ inputs.ami_id }}-${{ inputs.index }}
+          path: early-artifact-downloaded
+      - name: Compare artifact before runs-on/action
+        if: contains(inputs.extras, 's3-cache')
+        run: cmp early-artifact/world.txt early-artifact-downloaded/world.txt
       - uses: runs-on/action@v2 # keep pinned on tag as we need to make sure latest version passes tests
         with:
           show_env: true
@@ -274,9 +324,9 @@ jobs:
           dd if=/dev/urandom of=vote/random.bin bs=1M count=1024
           ls -lh vote/random.bin
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
       - name: "Build and push image (type=gha)"
-        uses: docker/build-push-action@0a97817b6ade9f46837855d676c4cca3a2471fc9 # v4
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: "vote"
           push: false
@@ -287,12 +337,12 @@ jobs:
       # Test for artifact upload and download
       - run: mkdir -p path/to/artifact
       - run: echo hello > path/to/artifact/world.txt
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: my-artifact-${{ inputs.ami_id }}-${{ inputs.index }}
           path: path/to/artifact/world.txt
       - run: rm path/to/artifact/world.txt
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: my-artifact-${{ inputs.ami_id }}-${{ inputs.index }}
           path: path/to/artifact/world.txt
@@ -307,20 +357,20 @@ jobs:
         id: md5
         run: echo "hash=$(md5sum ${{ env.FILENAME }} | cut -d' ' -f1)" >> $GITHUB_OUTPUT
       - name: Save to cache (actions/cache)
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ env.FILENAME }}
           key: github-${{github.run_id}}-actions-cache-${{ env.FILENAME }}
       # actions/cache backend seems to be eventually consistent only
       - run: sleep 2
       - name: Restore from cache (actions/cache)
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ env.FILENAME }}
           fail-on-cache-miss: true
           key: github-${{github.run_id}}-actions-cache-${{ env.FILENAME }}
       - name: Restore from cache (actions/cache, restoreKeys)
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ env.FILENAME }}
           fail-on-cache-miss: true
@@ -334,6 +384,22 @@ jobs:
             echo "MD5 hash mismatch"
             exit 1
           fi
+      # If a runner release breaks the agent's Runner.Worker patch, actions/cache
+      # falls back to GitHub's cache service and the steps above still pass.
+      # Require Magic Cache to have stored and served this key.
+      - name: Check Magic Cache served actions/cache
+        if: contains(inputs.extras, 's3-cache')
+        env:
+          CACHE_KEY: github-${{ github.run_id }}-actions-cache-${{ env.FILENAME }}
+        run: |
+          set -euo pipefail
+          : "${ACTIONS_CACHE_URL:?ACTIONS_CACHE_URL is not set}"
+          diagnostics="$(curl -fsS "${ACTIONS_CACHE_URL%/}/_runs-on/diagnostics")"
+          for operation in write read; do
+            count="$(jq --arg op "$operation" --arg key "$CACHE_KEY" '[.objects[] | select(.operation == $op and .key == $key)] | length' <<<"$diagnostics")"
+            echo "Magic Cache ${operation} events for ${CACHE_KEY}: ${count}"
+            test "$count" -gt 0
+          done
 
       - name: Save to cache (runs-on/cache)
         uses: runs-on/cache/save@a5f51d6f3fece787d03b7b4e981c82538a0654ed # v4

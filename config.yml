@@ -54,6 +54,7 @@ images:
       - install-sqlpackage.sh
       - install-nodejs.sh
       - install-oras-cli.sh
+      - install-otel-cli.sh
       - install-php.sh
       - install-postgresql.sh
       - install-ruby.sh
@@ -87,11 +88,13 @@ images:
       - install-git.sh
       - install-git-lfs.sh
       - install-github-cli.sh
+      - install-google-chrome.sh
       - install-java-tools.sh
       - install-kubernetes-tools.sh
       - install-mysql.sh
       - install-nvm.sh
       - install-nodejs.sh
+      - install-otel-cli.sh
       - install-postgresql.sh
       - install-ruby.sh
       - install-rust.sh
@@ -142,6 +145,7 @@ images:
       - install-mysql.sh
       - install-nodejs.sh
       - install-oras-cli.sh
+      - install-otel-cli.sh
       - install-php.sh
       - install-postgresql.sh
       - install-ruby.sh
@@ -160,6 +164,7 @@ images:
     description: RunsOn Ubuntu24 x64
 
   - id: ubuntu24-minimal-x64
+    template: ubuntu-minimal-x64
     instance_type: m8azn.large
     volume_size: 4
     volume_throughput: 400
@@ -168,6 +173,7 @@ images:
     description: RunsOn Ubuntu24 minimal x64
 
   - id: ubuntu24-minimal-arm64
+    template: ubuntu-minimal-arm64
     instance_type: m8g.large
     volume_size: 4
     volume_throughput: 400
@@ -190,11 +196,13 @@ images:
       - install-git.sh
       - install-git-lfs.sh
       - install-github-cli.sh
+      - install-google-chrome.sh
       - install-java-tools.sh
       - install-kubernetes-tools.sh
       - install-mysql.sh
       - install-nodejs.sh
       - install-oras-cli.sh
+      - install-otel-cli.sh
       - install-php.sh
       - install-postgresql.sh
       - install-ruby.sh
@@ -238,6 +246,7 @@ images:
       - install-mysql.sh
       - install-nodejs.sh
       - install-oras-cli.sh
+      - install-otel-cli.sh
       - install-php.sh
       - install-postgresql.sh
       - install-ruby.sh
@@ -270,11 +279,13 @@ images:
       - install-git.sh
       - install-git-lfs.sh
       - install-github-cli.sh
+      - install-google-chrome.sh
       - install-java-tools.sh
       - install-kubernetes-tools.sh
       - install-mysql.sh
       - install-nodejs.sh
       - install-oras-cli.sh
+      - install-otel-cli.sh
       - install-php.sh
       - install-postgresql.sh
       - install-ruby.sh
@@ -289,6 +300,24 @@ images:
     source_ami_name: ubuntu/images/hvm-ssd-gp3/ubuntu-resolute-26.04-arm64-server-*
     source_ami_owner: 099720109477
     description: RunsOn Ubuntu26 arm64
+
+  - id: ubuntu26-minimal-x64
+    template: ubuntu-minimal-x64
+    instance_type: m8azn.large
+    volume_size: 4
+    volume_throughput: 400
+    source_ami_name: ubuntu/images/hvm-ssd-gp3/ubuntu-resolute-26.04-amd64-server-*
+    source_ami_owner: 099720109477
+    description: RunsOn Ubuntu26 minimal x64
+
+  - id: ubuntu26-minimal-arm64
+    template: ubuntu-minimal-arm64
+    instance_type: m8g.large
+    volume_size: 4
+    volume_throughput: 400
+    source_ami_name: ubuntu/images/hvm-ssd-gp3/ubuntu-resolute-26.04-arm64-server-*
+    source_ami_owner: 099720109477
+    description: RunsOn Ubuntu26 minimal arm64
 
   - id: ubuntu26-gpu-x64
     template: ubuntu-gpu-x64

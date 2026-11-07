@@ -47,15 +47,27 @@ patch_ubuntu() {
   cp patches/ubuntu/build/install-runner-package.sh "$build_dir/"
   # add runs-on/action@v2 to action archive cache
   cp patches/ubuntu/build/install-actions-cache.sh "$build_dir/"
+  # add otel-cli for the runner's local OpenTelemetry collector
+  cp patches/ubuntu/build/install-otel-cli.sh "$build_dir/"
+  cp patches/ubuntu/tests/OtelCli.Tests.ps1 "$tests_dir/"
 
   # Preserve apt failures instead of letting the lock-retry wrapper hide them.
   cp patches/ubuntu/build/configure-apt-mock.sh "$build_dir/"
+  # Run dpkg under eatmydata when apt installs packages.
+  cp patches/ubuntu/build/configure-dpkg-eatmydata.sh "$build_dir/"
+  # Download gzip package indexes, which decompress faster than xz.
+  cp patches/ubuntu/build/configure-apt-gzip-indexes.sh "$build_dir/"
 
   # AWS uses direct Ubuntu sources, without Azure's mirror-list file.
   gnu_sed -i "/^echo 'APT mirrors'$/d; /^cat \/etc\/apt\/apt-mirrors.txt$/d" "$build_dir/configure-apt.sh"
 
   # This script runs before configure-apt.sh enables Assume-Yes.
   gnu_sed -i 's/^apt-get install /apt-get install -y /; s/^apt-get dist-upgrade$/apt-get dist-upgrade -y/' "$build_dir/install-ms-repos.sh"
+
+  # Upstream disables HTTP pipelining for Azure's proxies. Without it, every
+  # package waits a full round trip to archive.ubuntu.com, which rotates
+  # between sites up to 100 ms away from an AWS region.
+  gnu_sed -i '/^# Fix bad proxy and http headers settings$/,/^EOF$/d' "$build_dir/configure-apt.sh"
 
   # Direct sources need retries, without upstream's mirror-failover tuning.
   gnu_sed -i 's/apt_retries=[0-9]*/apt_retries=5/; s/apt_timeout=[0-9]*/apt_timeout=20/' "$build_dir/configure-apt.sh"
@@ -139,7 +151,6 @@ patch_ubuntu() {
   yq -oj -i 'eval(.clang | .versions |= [.[-1]])' $TOOLSET_PATH
   yq -oj -i 'eval(.clang | .default_version |= (parent | .versions[-1]))' $TOOLSET_PATH
   # only keep latest dotnet version
-  yq -oj -i 'eval(.dotnet | .aptPackages |= [.[-1]])' $TOOLSET_PATH
   yq -oj -i 'eval(.dotnet | .versions |= [.[-1]])' $TOOLSET_PATH
   # remove PSScriptAnalyzer
   yq -oj -i 'eval(del(.powershellModules[] | select(.name == "PSScriptAnalyzer")))' $TOOLSET_PATH
@@ -167,6 +178,17 @@ patch_ubuntu() {
   # might need to add symlinks if causing issues, but let's see
   gnu_sed -i 's/apt-get install "\$chrome_deb_path" -f/\/usr\/bin\/apt-get -qq install "\$chrome_deb_path" -f/' $build_dir/install-google-chrome.sh
   gnu_sed -i 's|# Download and unpack Chromium|invoke_tests "Browsers" "Chrome" \&\& exit 0|' $build_dir/install-google-chrome.sh
+  # Google ships Chrome and Chrome for Testing chromedriver for Linux arm64; upstream
+  # still hardcodes amd64 and skips the Chrome tests on arm64.
+  # https://github.com/runs-on/runner-images-for-aws/issues/89
+  if [ "$ARCH" = "arm64" ]; then
+    gnu_sed -i \
+      -e 's|google-chrome-stable_current_amd64.deb|google-chrome-stable_current_arm64.deb|' \
+      -e 's|CHROME_PLATFORM="linux64"|CHROME_PLATFORM="linux-arm64"|' \
+      -e 's|chromedriver-linux64|chromedriver-linux-arm64|' \
+      $build_dir/install-google-chrome.sh
+    gnu_sed -i 's|Describe "Chrome" -Skip:(Test-IsArm64) {|Describe "Chrome" {|' $tests_dir/Browsers.Tests.ps1
+  fi
 
   gnu_sed -i 's/unzip "$aws_sam_cli_archive_path" -d \/tmp/unzip -qq "$aws_sam_cli_archive_path" -d \/tmp/' $build_dir/install-aws-tools.sh
 

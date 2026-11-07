@@ -108,12 +108,12 @@ source "qemu" "build" {
     EOT
   }
 
-  ssh_username         = "ubuntu"
-  ssh_private_key_file = var.ssh_private_key_file
-  ssh_timeout          = "20m"
+  ssh_username           = "ubuntu"
+  ssh_private_key_file   = var.ssh_private_key_file
+  ssh_timeout            = "20m"
   ssh_handshake_attempts = 100
-  shutdown_command     = "sudo shutdown -P now"
-  shutdown_timeout     = "10m"
+  shutdown_command       = "sudo shutdown -P now"
+  shutdown_timeout       = "10m"
 }
 
 build {
@@ -149,7 +149,9 @@ build {
     execute_command  = "sudo sh -c '{{ .Vars }} {{ .Path }}'"
     scripts = [
       "${path.root}/../scripts/build/install-ms-repos.sh",
-      "${path.root}/../scripts/build/configure-apt.sh"
+      "${path.root}/../scripts/build/configure-apt.sh",
+      "${path.root}/../scripts/build/configure-dpkg-eatmydata.sh",
+      "${path.root}/../scripts/build/configure-apt-gzip-indexes.sh"
     ]
   }
   provisioner "shell" {

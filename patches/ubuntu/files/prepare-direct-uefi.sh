@@ -7,6 +7,16 @@ export LC_ALL=C
 readonly label_direct="RunsOn direct Linux"
 readonly label_fallback="RunsOn GRUB fallback"
 readonly state_dir="/var/lib/runs-on-direct-uefi"
+# EC2 has no PS/2 keyboard or mouse, yet the kernel spends about 0.48 s
+# probing for one: the gap that ends with "input: AT Translated Set 2
+# keyboard" in dmesg. The serial console and EC2's diagnostic interrupt do
+# not use the i8042 controller.
+readonly skip_ps2_arguments=(i8042.nokbd i8042.noaux i8042.nopnp)
+# systemd 259 queries the serial console for its terminfo, size and background
+# colour and waits 333 ms for each reply that never comes, about 0.9 s in PID 1
+# before the first unit starts. Preset the terminal type and size instead, and
+# keep the kernel from writing its whole log to the emulated serial port.
+readonly console_arguments=(quiet systemd.tty.term.console=linux systemd.tty.rows.console=24 systemd.tty.columns.console=80)
 
 fallback_hashes_before=''
 fallback_hashes_after=''
@@ -132,6 +142,10 @@ validate_direct_cmdline() {
   [[ " ${kernel_cmdline} " == *' root=PARTUUID='* ]] || fail "direct kernel command line has no root=PARTUUID= argument"
   [[ " ${kernel_cmdline} " == *' panic=-1 '* ]] || fail "direct kernel command line must reboot immediately after a panic"
   [[ " ${kernel_cmdline} " != *' initrd='* ]] || fail "direct kernel command line still refers to an initrd"
+  local argument
+  for argument in "${skip_ps2_arguments[@]}"; do
+    [[ " ${kernel_cmdline} " == *" ${argument} "* ]] || fail "direct kernel command line still probes PS/2 devices: no ${argument}"
+  done
 }
 
 read_le16() {
@@ -271,6 +285,9 @@ main() {
         kernel_cmdline+="${kernel_cmdline:+ }${argument}"
         ;;
     esac
+  done
+  for argument in "${skip_ps2_arguments[@]}" "${console_arguments[@]}"; do
+    [[ " ${kernel_cmdline} " == *" ${argument} "* ]] || kernel_cmdline+=" ${argument}"
   done
   validate_direct_cmdline "${kernel_cmdline}"
 

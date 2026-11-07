@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -17,6 +19,7 @@ import (
 
 	aws "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/aws/retry"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/feature/ec2/imds"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -29,7 +32,15 @@ const (
 	imdsLocalHostnamePath      = "local-hostname"
 	runsOnInstanceConfigPath   = "/runs-on/instance-config.json"
 	runsOnRunnerConfigPath     = "/runs-on/config.json"
+	agentPrefetchRetryBudget   = 45 * time.Second
 )
+
+type retryBackoff struct {
+	initial time.Duration
+	max     time.Duration
+}
+
+var agentPrefetchBackoff = retryBackoff{initial: 250 * time.Millisecond, max: 2 * time.Second}
 
 type awsState struct {
 	mu             sync.Mutex
@@ -67,6 +78,7 @@ func (s *awsState) waitForReadinessAndFetchIdentity(ctx context.Context, cfg con
 	ticker := time.NewTicker(defaultReadinessInterval)
 	defer ticker.Stop()
 	loggedWaiting := false
+	watchdog := newNetworkWatchdog()
 
 	for {
 		if ctx.Err() != nil {
@@ -81,6 +93,7 @@ func (s *awsState) waitForReadinessAndFetchIdentity(ctx context.Context, cfg con
 			log.Printf("waiting for IMDS instance identity availability: %v", err)
 			loggedWaiting = true
 		}
+		watchdog.observe(ctx, time.Now(), err)
 
 		select {
 		case <-ctx.Done():
@@ -239,7 +252,11 @@ func (s *awsState) prefetchMatchingBootstrap(ctx context.Context, cfg config, re
 		return true, err
 	}
 
-	if err := downloadS3ObjectToFile(ctx, s3Client, spec.S3Bucket, spec.S3Key, spec.DownloadedBinPath); err != nil {
+	// A few seconds into boot, DNS or the first connections to S3 can still
+	// fail. User data waits for this download, so retries are bounded.
+	ctx, cancel := context.WithTimeout(ctx, agentPrefetchRetryBudget)
+	defer cancel()
+	if err := downloadS3ObjectToFileWithRetry(ctx, s3Client, spec.S3Bucket, spec.S3Key, spec.DownloadedBinPath, agentPrefetchBackoff); err != nil {
 		return true, err
 	}
 	if err := installBootstrapWrapper(spec.BootstrapPath, spec.DownloadedBinPath); err != nil {
@@ -327,7 +344,12 @@ func (s *awsState) s3ClientFor(ctx context.Context, cfg config, region string) (
 		return retry.AddWithMaxAttempts(retry.NewStandard(), 1)
 	}
 
-	client := s3.NewFromConfig(awsCfg)
+	resolver := newQuickRetryResolver(dnsQueryTimeout, dnsQuickRetryWindow, upstreamNameservers(resolvedUpstreamConfig))
+	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
+		o.HTTPClient = awshttp.NewBuildableClient().WithDialerOptions(func(d *net.Dialer) {
+			d.Resolver = resolver
+		})
+	})
 	s.mu.Lock()
 	s.s3Clients[region] = client
 	s.mu.Unlock()
@@ -373,6 +395,9 @@ func discoverPublicKeyIndex(body []byte) (string, bool) {
 }
 
 func detectMonorepoBootstrapPrefetch(workDir string, raw []byte) (bootstrapPrefetchSpec, bool, error) {
+	if spec, matched, err := detectSandboxdPrefetch(workDir, raw); matched {
+		return spec, matched, err
+	}
 	script := string(raw)
 	if !strings.Contains(script, `BOOTSTRAP_BIN="/usr/local/bin/runs-on-bootstrap-$RUNS_ON_BOOTSTRAP_TAG"`) ||
 		!strings.Contains(script, `AGENT_BINARY_URL="$RUNS_ON_AGENT_S3_BUCKET/agent-linux-$(uname -m)"`) ||
@@ -410,6 +435,41 @@ func detectMonorepoBootstrapPrefetch(workDir string, raw []byte) (bootstrapPrefe
 		S3Bucket:          bucket,
 		S3Key:             key,
 		DownloadedBinPath: filepath.Join(workDir, "prefetched", bootstrapTag, agentBinaryName),
+	}, true, nil
+}
+
+// detectSandboxdPrefetch matches the RunsOn v4 user data, whose
+// runs-on-sandboxd unit runs the bootstrap on the stack bucket's sandboxd
+// (monorepo terraform/modules/v4/user-data/linux.sh.tmpl).
+func detectSandboxdPrefetch(workDir string, raw []byte) (bootstrapPrefetchSpec, bool, error) {
+	script := string(raw)
+	if !strings.Contains(script, `BOOTSTRAP_BIN="/usr/local/bin/runs-on-bootstrap-$RUNS_ON_BOOTSTRAP_TAG"`) ||
+		!strings.Contains(script, `"$BOOTSTRAP_BIN" --exec "s3://$RUNS_ON_BUCKET/bin/sandboxd-linux-$(uname -m)"`) ||
+		!strings.Contains(script, `cat <<'EOF' > /etc/systemd/system/runs-on-sandboxd.service`) {
+		return bootstrapPrefetchSpec{}, false, nil
+	}
+
+	bootstrapTag, found := extractQuotedEnvAssignment(script, "RUNS_ON_BOOTSTRAP_TAG")
+	if !found || bootstrapTag == "" {
+		return bootstrapPrefetchSpec{}, true, fmt.Errorf("matched RunsOn sandboxd template missing RUNS_ON_BOOTSTRAP_TAG")
+	}
+	bucket, found := extractQuotedEnvAssignment(script, "RUNS_ON_BUCKET")
+	if !found || bucket == "" || strings.ContainsAny(bucket, "/$") {
+		return bootstrapPrefetchSpec{}, true, fmt.Errorf("matched RunsOn sandboxd template missing RUNS_ON_BUCKET")
+	}
+	agentName, err := agentArtifactNameForArch(runtime.GOARCH)
+	if err != nil {
+		return bootstrapPrefetchSpec{}, true, err
+	}
+	binaryName := "sandboxd" + strings.TrimPrefix(agentName, "agent")
+
+	return bootstrapPrefetchSpec{
+		BootstrapTag:      bootstrapTag,
+		BootstrapPath:     filepath.Join("/usr/local/bin", "runs-on-bootstrap-"+bootstrapTag),
+		AgentBinaryName:   binaryName,
+		S3Bucket:          bucket,
+		S3Key:             "bin/" + binaryName,
+		DownloadedBinPath: filepath.Join(workDir, "prefetched", bootstrapTag, binaryName),
 	}, true, nil
 }
 
@@ -510,6 +570,44 @@ func downloadS3ObjectToFile(ctx context.Context, client s3ObjectGetter, bucket s
 		return fmt.Errorf("rename temp download file for %s: %w", destPath, err)
 	}
 	return nil
+}
+
+// downloadS3ObjectToFileWithRetry retries until ctx ends, unless S3 answers
+// with a status that a retry will not change, such as 403 or 404.
+func downloadS3ObjectToFileWithRetry(ctx context.Context, client s3ObjectGetter, bucket string, key string, destPath string, backoff retryBackoff) error {
+	delay := backoff.initial
+	for attempt := 1; ; attempt++ {
+		err := downloadS3ObjectToFile(ctx, client, bucket, key, destPath)
+		if err == nil || !isRetryableS3Error(err) {
+			return err
+		}
+		if ctx.Err() != nil {
+			return fmt.Errorf("%w (gave up after %d attempts)", err, attempt)
+		}
+		log.Printf("warning: attempt %d failed, retrying in %s: %v", attempt, delay, err)
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("%w (gave up after %d attempts)", err, attempt)
+		case <-time.After(delay):
+		}
+		delay = min(2*delay, backoff.max)
+	}
+}
+
+// isRetryableS3Error treats every failure to get an answer from S3 (DNS,
+// connect, TLS, a dropped body) as transient. The SDK reports those as status
+// 0. Once S3 answers, only 408, 429 and 5xx are worth retrying.
+func isRetryableS3Error(err error) bool {
+	var responseErr *smithyhttp.ResponseError
+	if !errors.As(err, &responseErr) {
+		return true
+	}
+	switch status := responseErr.HTTPStatusCode(); {
+	case status == 0, status == http.StatusRequestTimeout, status == http.StatusTooManyRequests, status >= 500:
+		return true
+	default:
+		return false
+	}
 }
 
 func isS3NotFound(err error) bool {
