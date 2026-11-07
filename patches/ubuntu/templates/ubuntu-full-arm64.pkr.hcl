@@ -177,6 +177,11 @@ build {
 
   sources = ["source.amazon-ebs.build_ebs"]
 
+  provisioner "file" {
+    source      = "${path.root}/../custom/files/install-runs-on-bootstrap.sh"
+    destination = "/tmp/install-runs-on-bootstrap.sh"
+  }
+
   provisioner "shell" {
     execute_command = "sudo sh -c '{{ .Vars }} {{ .Path }}'"
     scripts         = ["${path.root}/../custom/files/pre.sh"]
@@ -213,7 +218,9 @@ build {
     execute_command  = "sudo sh -c '{{ .Vars }} {{ .Path }}'"
     scripts = [
       "${path.root}/../scripts/build/install-ms-repos.sh",
-      "${path.root}/../scripts/build/configure-apt.sh"
+      "${path.root}/../scripts/build/configure-apt.sh",
+      "${path.root}/../scripts/build/configure-dpkg-eatmydata.sh",
+      "${path.root}/../scripts/build/configure-apt-gzip-indexes.sh"
     ]
   }
 
@@ -368,6 +375,7 @@ build {
     scripts = [
       "${path.root}/../scripts/build/configure-system.sh",
       "${path.root}/../custom/files/after-reboot.sh",
+      "${path.root}/../custom/files/configure-syn-reroll.sh",
       "${path.root}/../custom/files/configure-full-rolaunch.sh"
     ]
   }

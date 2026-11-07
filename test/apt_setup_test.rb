@@ -14,13 +14,19 @@ class AptSetupTest < Minitest::Test
         tests = "#{dir}/images/ubuntu/scripts/tests"
         FileUtils.mkdir_p(tests)
         File.write("#{tests}/Java.Tests.ps1", "")
+        File.write("#{tests}/Browsers.Tests.ps1", "Describe \"Chrome\" -Skip:(Test-IsArm64) {\n")
         FileUtils.cp("#{__dir__}/fixtures/apt/System.Tests.ps1", tests)
         FileUtils.mkdir_p("#{dir}/images/ubuntu/toolsets")
         File.write("#{dir}/images/ubuntu/toolsets/toolset-2204.json", "{}")
         FileUtils.cp(Dir["#{__dir__}/fixtures/apt/*.sh"], build)
-        %w[install-google-chrome install-aws-tools install-php install-java-tools].each do |name|
+        %w[install-aws-tools install-php install-java-tools].each do |name|
           File.write("#{build}/#{name}.sh", "")
         end
+        File.write("#{build}/install-google-chrome.sh", <<~'CHROME')
+          CHROME_DEB_URL="https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb"
+          CHROME_PLATFORM="linux64"
+          CHROMEDRIVER_DIR="/usr/local/share/chromedriver-linux64"
+        CHROME
         output, status = Open3.capture2e("bash", "-c", <<~SH, chdir: ROOT)
           set -e
           DIST=#{dist} ARCH=#{arch} TOOLSET_FILE=toolset-2204.json
@@ -30,6 +36,18 @@ class AptSetupTest < Minitest::Test
         SH
         assert status.success?, output
         assert_equal File.read("#{ROOT}/patches/ubuntu/tests/Apt.Tests.ps1"), File.read("#{tests}/Apt.Tests.ps1")
+        chrome = File.read("#{build}/install-google-chrome.sh")
+        browsers_tests = File.read("#{tests}/Browsers.Tests.ps1")
+        if arch == "arm64"
+          assert_includes chrome, "google-chrome-stable_current_arm64.deb"
+          assert_includes chrome, 'CHROME_PLATFORM="linux-arm64"'
+          assert_includes chrome, "/usr/local/share/chromedriver-linux-arm64"
+          assert_includes browsers_tests, 'Describe "Chrome" {'
+        else
+          assert_includes chrome, "google-chrome-stable_current_amd64.deb"
+          assert_includes chrome, 'CHROME_PLATFORM="linux64"'
+          assert_includes browsers_tests, 'Describe "Chrome" -Skip:(Test-IsArm64) {'
+        end
         environment = File.read("#{build}/configure-environment.sh")
         if dist == "ubuntu22"
           refute_includes environment, "rootflags="
@@ -66,6 +84,7 @@ class AptSetupTest < Minitest::Test
         assert_includes output, "APT upgrade -y"
         assert_includes File.read("#{apt}/apt.conf.d/80-retries"), 'Acquire::Retries "5";'
         assert_includes File.read("#{apt}/apt.conf.d/80-retries"), 'Acquire::http::Timeout "20";'
+        refute File.exist?("#{apt}/apt.conf.d/99bad_proxy"), "apt must keep its default HTTP pipelining"
         script = File.read("#{build}/install-ms-repos.sh")
         output, status = Open3.capture2e("bash", "-e", "-c", <<~SH + script)
           wget() { :; }; dpkg() { :; }; lsb_release() { echo 22.04; }
@@ -77,6 +96,24 @@ class AptSetupTest < Minitest::Test
         SH
         assert status.success?, output
       end
+    end
+  end
+
+  def test_apt_runs_dpkg_through_eatmydata_with_its_arguments
+    Dir.mktmpdir do |dir|
+      FileUtils.mkdir_p(%W[#{dir}/apt.conf.d #{dir}/sbin])
+      File.write("#{dir}/eatmydata", "#!/bin/sh\nprintf '%s\\n' \"$@\"\n")
+      FileUtils.chmod(0755, "#{dir}/eatmydata")
+      script = File.read("#{ROOT}/patches/ubuntu/build/configure-dpkg-eatmydata.sh")
+        .gsub("/etc/apt", dir).gsub("/usr/local/sbin", "#{dir}/sbin").gsub("/usr/bin/eatmydata", "#{dir}/eatmydata")
+      output, status = Open3.capture2e("bash", "-c", %(apt-get() { echo "APT $*"; }\n) + script)
+      assert status.success?, output
+      assert_includes output, "APT install -y --no-install-recommends eatmydata"
+
+      dpkg = File.read("#{dir}/apt.conf.d/10dpkg-eatmydata")[/^Dir::Bin::dpkg "(.+)";$/, 1]
+      output, status = Open3.capture2e(dpkg, "--unpack", "a b.deb")
+      assert status.success?, output
+      assert_equal "/usr/bin/dpkg\n--unpack\na b.deb\n", output
     end
   end
 

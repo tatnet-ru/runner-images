@@ -59,17 +59,24 @@ if [ -f /etc/chrony/chrony.conf ] && curl -fs -m 1 http://169.254.169.254/latest
   echo 'server 169.254.169.123 prefer iburst minpoll 4 maxpoll 4' >  /etc/chrony/chrony.conf
 fi
 
-echo "Storage=Volatile" >> /etc/systemd/journald.conf
+# journald only accepts the lowercase value: "Volatile" is ignored and leaves a
+# persistent journal on the root volume.
+echo "Storage=volatile" >> /etc/systemd/journald.conf
 echo "RuntimeMaxUse=64M" >> /etc/systemd/journald.conf
+# A volatile journal has no per-user files (journald only splits by UID on
+# persistent storage), so the runner reads /run/log/journal through the
+# journal groups, as on GitHub-hosted runners.
+usermod -aG adm,systemd-journal runner
 
 apt-get purge plymouth update-notifier-common multipath-tools -y
 
 # speed-up boot
 systemctl disable timers.target
 #  dev-hugepages.mount
-# Юниты гасятся по одному: набор зависит от базового образа (hibinit-agent
-# есть только на EC2), и одного отсутствующего хватало, чтобы уронить сборку.
-for unit in console-setup.service hibinit-agent.service grub-initrd-fallback.service qemu-kvm.service lvm2-monitor.service rsyslog.service ubuntu-advantage.service vgauth.service setvtrgb.service systemd-journal-flush.service; do
+# grub-common and grub-initrd-fallback stay enabled: they clear the GRUB flags
+# that otherwise pin every later boot to the full initramfs.
+# Disable optional units individually: cloud images do not carry every EC2 unit.
+for unit in console-setup.service hibinit-agent.service qemu-kvm.service lvm2-monitor.service rsyslog.service ubuntu-advantage.service vgauth.service setvtrgb.service systemd-journal-flush.service; do
   systemctl disable "$unit" || true
 done
 systemctl disable snapd.seeded.service snapd.autoimport.service snapd.core-fixup.service snapd.recovery-chooser-trigger.service snapd.system-shutdown.service || true
@@ -78,8 +85,24 @@ systemctl disable update-notifier-download.service plymouth-quit.service plymout
 systemctl disable libvirt-guests.service libvirtd.service systemd-machined.service || true
 systemctl disable mono-xsp4.service || true
 systemctl disable containerd.service docker.service || true
-systemctl disable apport.service logrotate.service grub-common.service keyboard-setup.service systemd-update-utmp.service systemd-fsck-root.service systemd-tmpfiles-setup.service apparmor.service e2scrub_reap.service || true
+systemctl disable apport.service logrotate.service keyboard-setup.service systemd-update-utmp.service systemd-fsck-root.service systemd-tmpfiles-setup.service apparmor.service e2scrub_reap.service || true
 systemctl disable ufw.service snapd.service snap.lxd.activate.service snapd.apparmor.service ec2-instance-connect.service snap.amazon-ssm-agent.amazon-ssm-agent.service cron.service || true
+# With apparmor.service disabled, Ubuntu's runc and crun profiles are never
+# loaded and runc runs unconfined. Ubuntu 26 forbids an unconfined process from
+# changing profile (kernel.apparmor_restrict_unprivileged_unconfined=1), and
+# from kernel 7.0.0-1016 that stacks every container's profile as
+# docker-default//&unconfined, which denies signals between a container's own
+# processes (issue 116). Runners hand out passwordless sudo, so the restriction
+# protects nothing here: turn it off, as Ubuntu 22 and 24 have it. The leading
+# "-" keeps systemd-sysctl quiet on kernels without the knob.
+cat > /etc/sysctl.d/20-apparmor.conf <<'EOF'
+# Ubuntu 26 sets this to 1 in /usr/lib/sysctl.d/10-apparmor.conf. These images
+# do not start apparmor.service, so no runc profile is loaded, and the kernel
+# would then stack every container's profile as docker-default//&unconfined,
+# which denies signals between a container's own processes.
+# https://github.com/runs-on/runner-images-for-aws/issues/116
+-kernel.apparmor_restrict_unprivileged_unconfined = 0
+EOF
 # Disable firmware update services, not needed for one-shot runners
 systemctl disable fwupd.service fwupd-refresh.service || true
 # Disable dpkg-db-backup service, not needed for one-shot runners

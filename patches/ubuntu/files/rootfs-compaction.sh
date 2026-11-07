@@ -61,6 +61,57 @@ detach_loop_disk() {
   fi
 }
 
+# Blocks of a new EBS volume that were never written do not read as zeros,
+# so the sparse copy below leaves random bytes wherever it skips an all-zero
+# chunk. Writing every block instead puts the whole image in the snapshot and
+# slows boots by seconds. So rewrite only what each partition uses: on ext4,
+# e2image compares the blocks the filesystem uses and writes those that
+# differ. Other partitions (EFI, BIOS boot) and the space around them are
+# small and copied whole.
+copy_image_range() {
+  local sparse_image="$1"
+  local target_disk="$2"
+  local offset="$3"
+  local length="$4"
+
+  [[ "${length}" -gt 0 ]] || return 0
+  dd if="${sparse_image}" of="${target_disk}" bs=1M \
+    iflag=skip_bytes,count_bytes oflag=seek_bytes conv=notrunc,fsync status=none \
+    skip="${offset}" seek="${offset}" count="${length}"
+  blockdev --flushbufs "${target_disk}"
+  cmp -n "${length}" -i "${offset}:${offset}" "${sparse_image}" "${target_disk}"
+}
+
+repair_sparse_copy() {
+  local sparse_image="$1"
+  local target_disk="$2"
+  local image_size first_start="" last_end=0 start size offset fstype pending
+
+  image_size="$(stat -c %s "${sparse_image}")"
+  while read -r start size; do
+    offset=$((start * 512))
+    [[ -n "${first_start}" && "${first_start}" -le "${offset}" ]] || first_start="${offset}"
+    [[ "$((offset + size * 512))" -le "${last_end}" ]] || last_end=$((offset + size * 512))
+    fstype="$(blkid -p -O "${offset}" -s TYPE -o value "${sparse_image}" || true)"
+    if [[ "${fstype}" == "ext4" ]]; then
+      e2image -rac -o "${offset}" -O "${offset}" "${sparse_image}" "${target_disk}"
+      blockdev --flushbufs "${target_disk}"
+      # Block -1 is e2image marking the end of the filesystem, not a block.
+      pending="$(e2image -racn -o "${offset}" -O "${offset}" "${sparse_image}" "${target_disk}" 2>&1 |
+        grep '^Writing block' | grep -c -v ' 18446744073709551615$' || true)"
+      [[ "${pending}" == "0" ]] || { echo "ext4 partition at ${offset} still differs in ${pending} blocks" >&2; exit 1; }
+      rootfs_compaction_log "repaired ext4 partition at ${offset}"
+    else
+      copy_image_range "${sparse_image}" "${target_disk}" "${offset}" "$((size * 512))"
+      rootfs_compaction_log "copied ${fstype:-unformatted} partition at ${offset} whole"
+    fi
+  done < <(sfdisk -d "${sparse_image}" | awk -F'[=,]' '/ : start=/ { print $2 + 0, $4 + 0 }')
+  [[ -n "${first_start}" ]] || { echo "No partitions found in ${sparse_image}" >&2; exit 1; }
+
+  copy_image_range "${sparse_image}" "${target_disk}" 0 "${first_start}"
+  copy_image_range "${sparse_image}" "${target_disk}" "${last_end}" "$((image_size - last_end))"
+}
+
 materialize_sparse_image() {
   local sparse_image="$1"
   local target_disk="$2"
@@ -73,6 +124,7 @@ materialize_sparse_image() {
   if [[ -n "$ddpt_summary" ]]; then
     rootfs_compaction_log "$ddpt_summary"
   fi
+  repair_sparse_copy "$sparse_image" "$target_disk"
   udevadm settle
   sync
 }

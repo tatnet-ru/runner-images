@@ -72,6 +72,11 @@ variable "ami_regions" {
   type    = list(string)
 }
 
+variable "publish_publicly" {
+  type    = bool
+  default = true
+}
+
 variable "source_ami_owner" {
   type    = string
   default = "801119661308"
@@ -113,8 +118,8 @@ source "amazon-ebs" "build_ebs" {
   ami_name                                  = "${var.ami_name}"
   ami_description                           = "${var.ami_description}"
   ami_virtualization_type                   = "hvm"
-  # make AMIs publicly accessible
-  ami_groups                                = ["all"]
+  # Make AMIs public for release builds; dev accounts can keep them private.
+  ami_groups                                = var.publish_publicly ? ["all"] : []
   ebs_optimized                             = true
   enable_nested_virtualization              = true
   # spot_instance_types                       = ["c6a.metal", "m6a.metal", "c6i.metal", "m6i.metal", "c7i.metal-24xl", "m7i.metal-24xl"]
@@ -172,8 +177,8 @@ EOF
 
   ami_regions = "${var.ami_regions}"
 
-  // make underlying snapshot public
-  snapshot_groups = ["all"]
+  // Keep the snapshot visibility aligned with the AMI.
+  snapshot_groups = var.publish_publicly ? ["all"] : []
 
   launch_block_device_mappings {
     device_name = "/dev/sda1"
@@ -234,6 +239,16 @@ build {
   provisioner "file" {
     destination = "${var.image_folder}\\"
     source      = "${path.root}/../assets"
+  }
+
+  # The image folder is removed during cleanup; keep the boot layout tools for
+  # Optimize-BootLayout.ps1, which runs after the last restart.
+  provisioner "powershell" {
+    inline = [
+      "New-Item -ItemType Directory -Force -Path 'C:\\ProgramData\\RunsOn' | Out-Null",
+      "Copy-Item '${var.image_folder}\\assets\\bootpack.exe' 'C:\\ProgramData\\RunsOn\\bootpack.exe' -Force",
+      "Copy-Item '${var.image_folder}\\assets\\BootTrace.psm1' 'C:\\ProgramData\\RunsOn\\BootTrace.psm1' -Force"
+    ]
   }
 
   provisioner "file" {
@@ -325,6 +340,7 @@ provisioner "powershell" {
       "${path.root}/../scripts/build/Install-PowershellCore.ps1",
       "${path.root}/../scripts/build/Install-WebPlatformInstaller.ps1",
       "${path.root}/../scripts/build/Install-Runner.ps1",
+      "${path.root}/../scripts/build/Install-OtelCli.ps1",
       "${path.root}/../scripts/build/Install-RunsOnBootstrap.ps1"
     ]
   }
@@ -485,6 +501,7 @@ provisioner "powershell" {
       "${path.root}/../scripts/build/Install-NativeImages.ps1",
       "${path.root}/../scripts/build/Configure-System.ps1",
       "${path.root}/../scripts/build/Configure-User.ps1",
+      "${path.root}/../scripts/build/Configure-RunsOnBoot.ps1",
       # "${path.root}/../scripts/build/Post-Build-Validation.ps1"
     ]
     skip_clean       = true
@@ -498,8 +515,17 @@ provisioner "powershell" {
     ]
   }
 
+  # The next restart is recorded so that the files it reads can be packed.
+  provisioner "powershell" {
+    scripts = ["${path.root}/../scripts/build/Start-BootTrace.ps1"]
+  }
+
   provisioner "windows-restart" {
     restart_timeout = "20m"
+  }
+
+  provisioner "powershell" {
+    scripts = ["${path.root}/../scripts/build/Optimize-BootLayout.ps1"]
   }
 
   provisioner "powershell" {
