@@ -1,4 +1,4 @@
 ---
 repository: https://github.com/actions/runner-images.git
 ref: refs/heads/main
-revision: 67421cc1650a2ab8eac05d4674a787d25dc51627
+revision: f2f91839f985dcbde42542557c72de8d0c2970a6
