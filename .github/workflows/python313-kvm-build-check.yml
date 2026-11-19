@@ -21,7 +21,7 @@ jobs:
           sudo rm -rf /usr/local/lib/android /usr/local/share/boost /usr/share/dotnet /opt/ghc
           df -h /
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils cloud-image-utils libguestfs-tools
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils cloud-image-utils
           dir="$RUNNER_TEMP/canary-bin"
           mkdir -p "$dir"
           curl -fsSL --retry 3 https://github.com/mikefarah/yq/releases/download/v4.54.2/yq_linux_amd64 -o "$dir/yq"
@@ -46,10 +46,60 @@ jobs:
           sed -i '/accelerator      = "kvm"/a\  cpu_model        = "host"' patches/ubuntu/templates/ubuntu-full-x64-qemu.pkr.hcl
           bin/build-qemu --image-id ubuntu24-full-x64 --work "$RUNNER_TEMP/canary-image" --cpus 2 --memory 6144
           sha256sum "$RUNNER_TEMP/canary-image/out/ubuntu24-full-x64.qcow2"
-      - name: Verify installed Python 3.13 directly on image
+      - name: Boot the full image and prove setup-python uses cache offline
         run: |
           set -euo pipefail
-          export LIBGUESTFS_BACKEND=direct
-          sudo chmod +r "/boot/vmlinuz-$(uname -r)" 2>/dev/null || true
-          guestfish --ro -a "$RUNNER_TEMP/canary-image/out/ubuntu24-full-x64.qcow2" -i ls /opt/hostedtoolcache/Python
-          guestfish --ro -a "$RUNNER_TEMP/canary-image/out/ubuntu24-full-x64.qcow2" -i find /opt/hostedtoolcache/Python | grep -E '^3[.]13[.][0-9]+/x64[.]complete$'
+          root="$RUNNER_TEMP/test-runner"
+          mkdir -m 700 "$root"
+          cd "$root"
+          ssh-keygen -q -t ed25519 -N '' -f key
+          cat > user-data <<CLOUD
+          #cloud-config
+          users:
+            - name: runner
+              shell: /bin/bash
+              lock_passwd: true
+              ssh_authorized_keys:
+                - $(cat key.pub)
+          runcmd:
+            - [systemctl, start, ssh.service]
+          CLOUD
+          echo 'instance-id: isolated-python313-image' > meta-data
+          cloud-localds seed.iso user-data meta-data
+          image="$RUNNER_TEMP/canary-image/out/ubuntu24-full-x64.qcow2"
+          qemu-img check "$image"
+          qemu-img create -q -f qcow2 -F qcow2 -b "$image" runner.qcow2
+          qemu-system-x86_64 -enable-kvm -cpu host -smp 2 -m 5120 -display none \
+            -drive if=virtio,format=qcow2,file=runner.qcow2 \
+            -drive media=cdrom,readonly=on,file=seed.iso \
+            -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:22413-:22 \
+            -serial file:serial.log -daemonize -pidfile qemu.pid
+          trap 'kill "$(cat qemu.pid)" 2>/dev/null || true' EXIT
+          guest() {
+            ssh -i key -p 22413 -o BatchMode=yes -o ConnectTimeout=4 -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=known_hosts runner@127.0.0.1 "$@"
+          }
+          for i in {1..60}; do
+            if guest true 2>/dev/null; then break; fi
+            sleep 3
+          done
+          guest 'cloud-init status --wait; test "$(uname -m)" = x86_64'
+          curl -fsSL --retry 3 https://api.github.com/repos/actions/setup-python/tarball/v7 |
+            guest 'mkdir -p ~/setup-python; tar -xzf - --strip-components=1 -C ~/setup-python'
+          guest 'sudo unshare --net runuser -u runner -- bash -s' <<'GUEST'
+          set -euo pipefail
+          export RUNNER_TOOL_CACHE=/opt/hostedtoolcache AGENT_TOOLSDIRECTORY=/opt/hostedtoolcache
+          ls "$RUNNER_TOOL_CACHE"/Python/3.13.*/x64.complete
+          export RUNNER_TEMP=$(mktemp -d)
+          export GITHUB_ENV="$RUNNER_TEMP/env" GITHUB_PATH="$RUNNER_TEMP/path" GITHUB_OUTPUT="$RUNNER_TEMP/out"
+          touch "$GITHUB_ENV" "$GITHUB_PATH" "$GITHUB_OUTPUT"
+          node=$(find /home/runner/externals/node24 -type f -name node -print -quit)
+          time env 'INPUT_PYTHON-VERSION=3.13' 'INPUT_CHECK-LATEST=false' 'INPUT_ALLOW-PRERELEASES=false' \
+            'INPUT_FREETHREADED=false' 'INPUT_UPDATE-ENVIRONMENT=true' "$node" /home/runner/setup-python/dist/setup/index.js | tee "$RUNNER_TEMP/setup.log"
+          grep -F 'Found tool in cache Python 3.13.' "$RUNNER_TEMP/setup.log"
+          "$RUNNER_TOOL_CACHE"/Python/3.13.*/x64/bin/python --version
+          GUEST
+      - name: Show guest serial log on failure
+        if: failure()
+        run: |
+          file="$RUNNER_TEMP/test-runner/serial.log"
+          if test -f "$file"; then tail -n 120 "$file"; fi
