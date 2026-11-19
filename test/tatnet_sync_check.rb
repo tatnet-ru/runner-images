@@ -1,4 +1,5 @@
 # Explicit integration check, invoked after bin/sync-local by the QEMU CI job.
+require "json"
 require "yaml"
 root = File.expand_path("..", __dir__)
 release = File.join(root, "releases/ubuntu24/x64")
@@ -14,3 +15,10 @@ image.fetch("install_scripts").each do |script|
 end
 abort "QEMU build inputs missing: #{missing.join(', ')}" unless missing.empty?
 puts "QEMU inputs verified: #{paths.size} paths and #{image.fetch('install_scripts').size} configured installers"
+
+toolset = JSON.parse(File.read(File.join(release, "images/ubuntu/toolsets/toolset-2404.json")))
+python = toolset.fetch("toolcache").find { |tool| tool.fetch("name") == "Python" }
+unless python&.fetch("versions")&.include?("3.13.*")
+  abort "Ubuntu 24.04 x64 must include Python 3.13 in the tool cache"
+end
+puts "Python 3.13 is included in the Ubuntu 24.04 x64 tool cache recipe"
