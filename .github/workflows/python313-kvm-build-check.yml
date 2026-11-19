@@ -1,0 +1,53 @@
+name: Isolated full Ubuntu 24.04 x64 KVM build
+on:
+  push:
+    branches: [codex/python313-kvm-build-check]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 110
+    env:
+      IMAGE_SHA: f521990316a71f7cd42626174aa4cbdcf25d1c56
+    steps:
+      - name: Check KVM and prepare disposable build host
+        run: |
+          set -euo pipefail
+          ls -l /dev/kvm
+          sudo chown root:kvm /dev/kvm
+          sudo setfacl -m "u:$(id -un):rw" /dev/kvm
+          test -r /dev/kvm && test -w /dev/kvm
+          sudo rm -rf /usr/local/lib/android /usr/local/share/boost /usr/share/dotnet /opt/ghc
+          df -h /
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils cloud-image-utils libguestfs-tools
+          dir="$RUNNER_TEMP/canary-bin"
+          mkdir -p "$dir"
+          curl -fsSL --retry 3 https://github.com/mikefarah/yq/releases/download/v4.54.2/yq_linux_amd64 -o "$dir/yq"
+          echo "44c7759059b4910827a0059a2757b22001e59360cdecdb2ef8dedc4b6c7e9f32  $dir/yq" | sha256sum -c -
+          chmod +x "$dir/yq"
+          curl -fsSLO --retry 3 https://releases.hashicorp.com/packer/1.16.2/packer_1.16.2_linux_amd64.zip
+          curl -fsSLO --retry 3 https://releases.hashicorp.com/packer/1.16.2/packer_1.16.2_SHA256SUMS
+          grep -E '  packer_1.16.2_linux_amd64.zip$' packer_1.16.2_SHA256SUMS | sha256sum -c -
+          unzip -q packer_1.16.2_linux_amd64.zip -d "$dir"
+          echo "$dir" >> "$GITHUB_PATH"
+      - name: Build full Ubuntu 24.04 x64 image from PR 6
+        run: |
+          set -euo pipefail
+          git init -q "$RUNNER_TEMP/runner-images"
+          cd "$RUNNER_TEMP/runner-images"
+          git fetch -q --depth=1 https://github.com/tatnet-ru/runner-images.git "$IMAGE_SHA"
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$IMAGE_SHA"
+          bin/sync-local --image-id ubuntu24-full-x64
+          ruby test/tatnet_sync_check.rb
+          bin/build-qemu --image-id ubuntu24-full-x64 --work "$RUNNER_TEMP/canary-image" --cpus 2 --memory 6144
+          sha256sum "$RUNNER_TEMP/canary-image/out/ubuntu24-full-x64.qcow2"
+      - name: Verify installed Python 3.13 directly on image
+        run: |
+          set -euo pipefail
+          export LIBGUESTFS_BACKEND=direct
+          sudo chmod +r "/boot/vmlinuz-$(uname -r)" 2>/dev/null || true
+          guestfish --ro -a "$RUNNER_TEMP/canary-image/out/ubuntu24-full-x64.qcow2" -i ls /opt/hostedtoolcache/Python
+          guestfish --ro -a "$RUNNER_TEMP/canary-image/out/ubuntu24-full-x64.qcow2" -i find /opt/hostedtoolcache/Python | grep -E '^3[.]13[.][0-9]+/x64[.]complete$'
