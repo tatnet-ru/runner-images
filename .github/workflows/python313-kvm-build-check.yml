@@ -42,6 +42,8 @@ jobs:
           test "$(git rev-parse HEAD)" = "$IMAGE_SHA"
           bin/sync-local --image-id ubuntu24-full-x64
           ruby test/tatnet_sync_check.rb
+          # The stock QEMU CPU omits SSE4/POPCNT required by the pinned .NET SDK.
+          sed -i '/accelerator      = "kvm"/a\  cpu_model        = "host"' patches/ubuntu/templates/ubuntu-full-x64-qemu.pkr.hcl
           bin/build-qemu --image-id ubuntu24-full-x64 --work "$RUNNER_TEMP/canary-image" --cpus 2 --memory 6144
           sha256sum "$RUNNER_TEMP/canary-image/out/ubuntu24-full-x64.qcow2"
       - name: Verify installed Python 3.13 directly on image
