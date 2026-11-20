@@ -75,6 +75,7 @@ variable "iso_checksum" {
   default = "file:https://cloud-images.ubuntu.com/noble/current/SHA256SUMS"
 }
 
+# .NET 11 needs SSE4.2 and POPCNT, which the default qemu64 model omits.
 source "qemu" "build" {
   iso_url          = var.iso_url
   iso_checksum     = var.iso_checksum
@@ -82,6 +83,7 @@ source "qemu" "build" {
   disk_size        = var.disk_size
   format           = "qcow2"
   accelerator      = "kvm"
+  cpu_model        = "host"
   cpus             = var.cpus
   memory           = var.memory
   headless         = true
