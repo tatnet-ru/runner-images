@@ -33,6 +33,8 @@ jobs:
           unzip -q packer_1.16.2_linux_amd64.zip -d "$dir"
           echo "$dir" >> "$GITHUB_PATH"
       - name: Build full Ubuntu 24.04 x64 image from PR 6
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           git init -q "$RUNNER_TEMP/runner-images"
@@ -42,6 +44,52 @@ jobs:
           test "$(git rev-parse HEAD)" = "$IMAGE_SHA"
           bin/sync-local --image-id ubuntu24-full-x64
           ruby test/tatnet_sync_check.rb
+          # The host resolves public release metadata with its job token.
+          # Only public API responses enter the guest.
+          ubuntu=releases/ubuntu24/x64/images/ubuntu
+          cache="$ubuntu/scripts/helpers/release-api-cache"
+          mkdir -p "$cache"
+          cache_api() {
+            local path="$1" key
+            key=$(printf '%s' "$path" | sha256sum | cut -d ' ' -f1)
+            gh api "$path" > "$cache/$key"
+          }
+          for repo in actions/action-versions runs-on/runner Azure/bicep aws/aws-sam-cli Kitware/CMake cli/cli kubernetes-sigs/kind oras-project/oras ruby/ruby-builder SeleniumHQ/selenium mikefarah/yq; do
+            cache_api "repos/$repo/releases?per_page=100"
+          done
+          while IFS= read -r plugin; do
+            cache_api "repos/docker/$plugin/releases?per_page=100"
+          done < <(jq -r '.docker.plugins[].plugin' "$ubuntu/toolsets/toolset-2404.json")
+          for repo in actions/runner nvm-sh/nvm facebook/zstd; do
+            cache_api "repos/$repo/releases/latest"
+          done
+          cache_api repos/runs-on/action/git/ref/heads/v2
+          python3 - "$ubuntu" <<'PYTHON'
+          from pathlib import Path
+          import sys
+          ubuntu = Path(sys.argv[1])
+          helper = ubuntu / "scripts/helpers/install.sh"
+          text = helper.read_text()
+          marker = "    local api_path=$1\n"
+          assert text.count(marker) == 1
+          text = text.replace(marker, marker + (
+              '    local key cached\n'
+              '    key=$(printf "%s" "$api_path" | sha256sum | cut -d " " -f1)\n'
+              '    cached="$HELPER_SCRIPTS/release-api-cache/$key"\n'
+              '    if [[ -r "$cached" ]]; then cat "$cached"; return; fi\n'
+          ))
+          helper.write_text(text)
+          actions = ubuntu / "scripts/build/install-actions-cache.sh"
+          text = actions.read_text().replace(
+              'curl -fsSL "https://api.github.com/repos/runs-on/action/git/ref/heads/v2"',
+              'get_github_api_json "repos/runs-on/action/git/ref/heads/v2"',
+          ).replace('https://api.github.com/repos/runs-on/action/tarball/', 'https://codeload.github.com/runs-on/action/legacy.tar.gz/')
+          actions.write_text(text)
+          finalize = ubuntu / "custom/files/finalize-runner-environment.sh"
+          text = finalize.read_text().replace('set -euo pipefail\n', 'set -euo pipefail\nrm -rf /imagegeneration/helpers/release-api-cache\n', 1)
+          finalize.write_text(text)
+          PYTHON
+          unset GH_TOKEN
           # The stock QEMU CPU omits SSE4/POPCNT required by the pinned .NET SDK.
           sed -i '/accelerator      = "kvm"/a\  cpu_model        = "host"' patches/ubuntu/templates/ubuntu-full-x64-qemu.pkr.hcl
           bin/build-qemu --image-id ubuntu24-full-x64 --work "$RUNNER_TEMP/canary-image" --cpus 2 --memory 6144
@@ -83,7 +131,7 @@ jobs:
             sleep 3
           done
           guest 'cloud-init status --wait; test "$(uname -m)" = x86_64'
-          curl -fsSL --retry 3 https://api.github.com/repos/actions/setup-python/tarball/v7 |
+          curl -fsSL --retry 3 https://codeload.github.com/actions/setup-python/legacy.tar.gz/refs/tags/v7 |
             guest 'mkdir -p ~/setup-python; tar -xzf - --strip-components=1 -C ~/setup-python'
           guest 'sudo unshare --net runuser -u runner -- bash -s' <<'GUEST'
           set -euo pipefail
