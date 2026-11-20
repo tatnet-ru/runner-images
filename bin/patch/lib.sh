@@ -133,8 +133,12 @@ patch_ubuntu() {
 
   # Use official runners for CodeQL
   yq -oj -i 'del(.toolcache[] | select(.name == "CodeQL"))' $TOOLSET_PATH
-  # only keep last python version
-  yq -oj -i '(.toolcache[] | select(.name == "Python") | select(.versions | length > 0) | .versions) |= [.[-1]]' $TOOLSET_PATH
+  # TatNet Ubuntu 24.04 x64 CI also requests Python 3.13 via setup-python.
+  if [ "$DIST" = "ubuntu24" ] && [ "$ARCH" = "x64" ]; then
+    yq -oj -i '(.toolcache[] | select(.name == "Python") | select(.versions | length > 0) | .versions) |= (["3.13.*", .[-1]] | unique)' "$TOOLSET_PATH"
+  else
+    yq -oj -i '(.toolcache[] | select(.name == "Python") | select(.versions | length > 0) | .versions) |= [.[-1]]' "$TOOLSET_PATH"
+  fi
   # only keep last node version in toolcache
   yq -oj -i '(.toolcache[] | select(.name == "node") | select(.versions | length > 0) | .versions) |= [.[-1]]' $TOOLSET_PATH
   if [ "$ARCH" = "arm64" ]; then
